@@ -54,6 +54,11 @@ References
    *Construction of a genetic toggle switch in Escherichia coli*,
    `Nature <https://doi.org/10.1038/35002131>`__.
 
+.. [Gayoso18] Gayoso *et al.*, (2018)
+   Gayoso, Adam, & Shor, Jonathan. (2018, July 17)
+   *DoubletDetection (Version v2.4).*,
+   `Zenodo <http://doi.org/10.5281/zenodo.2678042>`__.
+
 .. [Hagberg08] Hagberg *et al.* (2008),
    *Exploring Network Structure, Dynamics, and Function using NetworkX*,
    `Scipy Conference <http://conference.scipy.org/proceedings/SciPy2008/paper_2/>`__.

@@ -69,6 +69,7 @@ Clustering and trajectory inference
    tl.phenograph
    tl.harmony_timeseries
    tl.wishbone
+   tl.doublet_detection
 
 Gene scores, Cell cycle
 ~~~~~~~~~~~~~~~~~~~~~~~
