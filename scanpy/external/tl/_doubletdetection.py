@@ -180,8 +180,8 @@ def doublet_detection(
             layer in adata.layers
         ), "Layer key `'{}'` not found in " "adata.layers".format(layer)
 
-        print(f"Doublet Detection using `adata.layers['{layer}'']` ....")
-        logg.info(f"Doublet Detection using `adata.layers['{layer}'']` ....")
+        print(f"Doublet Detection using `adata.layers['{layer}']` ....")
+        logg.info(f"Doublet Detection using `adata.layers['{layer}']` ....")
         raw_counts = adata.layers[layer]
 
     if isinstance(raw_counts, spmatrix):
