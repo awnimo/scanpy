@@ -31,6 +31,7 @@ Data integration
    :toctree: .
 
    pp.bbknn
+   pp.harmony_integrate
    pp.mnn_correct
 
 Imputation
@@ -44,6 +45,7 @@ Note that the fundamental limitations of imputation are still under `debate
 
    pp.dca
    pp.magic
+   pp.scvi
 
 
 Tools: TL

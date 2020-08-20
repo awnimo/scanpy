@@ -52,6 +52,7 @@ def embedding(
     edges: bool = False,
     edges_width: float = 0.1,
     edges_color: Union[str, Sequence[float], Sequence[str]] = 'grey',
+    neighbors_key: Optional[str] = None,
     arrows: bool = False,
     arrows_kwds: Optional[Mapping[str, Any]] = None,
     groups: Optional[str] = None,
@@ -63,6 +64,7 @@ def embedding(
     crop_coord: Tuple[int, int, int, int] = None,
     alpha_img: float = 1.0,
     bw: bool = False,
+    library_id: str = None,
     #
     color_map: Union[Colormap, str, None] = None,
     palette: Union[str, Sequence[str], Cycler, None] = None,
@@ -150,7 +152,7 @@ def embedding(
     # get the points position and the components list
     # (only if components is not None)
     data_points, components_list = _get_data_points(
-        adata, basis, projection, components, img_key
+        adata, basis, projection, components, img_key, library_id
     )
 
     # Setup layout.
@@ -204,8 +206,6 @@ def embedding(
             and len(size) == adata.shape[0]
         ):
             size = np.array(size, dtype=float)
-    elif img_key is not None:
-        size = 1.0
     else:
         size = 120000 / adata.shape[0]
 
@@ -294,16 +294,19 @@ def embedding(
                 # had to return size_spot cause spot size is set according
                 # to the image to be plotted
                 img_processed, img_coord, size_spot, cmap_img = _process_image(
-                    adata, data_points, img_key, crop_coord, size, bw
+                    adata, data_points, img_key, crop_coord, size, library_id, bw
                 )
                 ax.imshow(img_processed, cmap=cmap_img, alpha=alpha_img)
                 ax.set_xlim(img_coord[0], img_coord[1])
                 ax.set_ylim(img_coord[3], img_coord[2])
+            elif img_key is None and library_id is not None:
+                # order of magnitude similar to public visium
+                size_spot = 70 * size
 
             scatter = (
                 partial(ax.scatter, s=size)
-                if img_key is None
-                else partial(circles, s=size_spot)
+                if library_id is None
+                else partial(circles, s=size_spot, ax=ax)
             )
 
             if add_outline:
@@ -367,7 +370,7 @@ def embedding(
                     in_groups_size = not_in_groups_size = size
 
                 # only show grey points if no image is below
-                if img_key is None:
+                if library_id is None:
                     ax.scatter(
                         _data_points[~in_groups, 0],
                         _data_points[~in_groups, 1],
@@ -421,7 +424,7 @@ def embedding(
         ax.autoscale_view()
 
         if edges:
-            _utils.plot_edges(ax, adata, basis, edges_width, edges_color)
+            _utils.plot_edges(ax, adata, basis, edges_width, edges_color, neighbors_key)
         if arrows:
             _utils.plot_arrows(ax, adata, basis, arrows_kwds)
 
@@ -733,16 +736,20 @@ def spatial(
     adata,
     *,
     img_key: Union[str, None, Empty] = _empty,
+    library_id: Union[str, Empty] = _empty,
     crop_coord: Tuple[int, int, int, int] = None,
     alpha_img: float = 1.0,
     bw: bool = False,
+    size: float = None,
     **kwargs,
 ) -> Union[Axes, List[Axes], None]:
     """\
     Scatter plot in spatial coordinates.
 
-    Use the parameter `img_key` to see the image in the background.
+    Use the parameter `img_key` to see the image in the background
+    And the parameter `library_id` to select the image.
     By default, `'hires'` and `'lowres'` are attempted.
+    Also by default the first entry of `library_id` is attempted.
     Use `crop_coord`, `alpha_img`, and `bw` to control how it is displayed.
     Use `size` to scale the size of the Visium spots plotted on top.
 
@@ -756,10 +763,23 @@ def spatial(
     -------
     If `show==False` a :class:`~matplotlib.axes.Axes` or a list of it.
     """
+    if library_id is _empty:
+        library_id = next((i for i in adata.uns['spatial'].keys()))
+    else:
+        if library_id not in adata.uns['spatial'].keys():
+            raise KeyError(
+                f"Could not find '{library_id}' in adata.uns['spatial'].keys().\n"
+                f"Available keys are: {list(adata.uns['spatial'].keys())}."
+            )
+
+    spatial_data = adata.uns['spatial'][library_id]
     if img_key is _empty:
         img_key = next(
-            (k for k in ['hires', 'lowres'] if k in adata.uns['images']), None
+            (k for k in ['hires', 'lowres'] if k in spatial_data['images']), None,
         )
+
+    if size is None:
+        size = 1.0
 
     return embedding(
         adata,
@@ -768,6 +788,8 @@ def spatial(
         crop_coord=crop_coord,
         alpha_img=alpha_img,
         bw=bw,
+        library_id=library_id,
+        size=size,
         **kwargs,
     )
 
@@ -776,7 +798,7 @@ def spatial(
 
 
 def _get_data_points(
-    adata, basis, projection, components, img_key
+    adata, basis, projection, components, img_key, library_id
 ) -> Tuple[List[np.ndarray], List[Tuple[int, int]]]:
     """
     Returns the data points corresponding to the selected basis, projection and/or components.
@@ -877,20 +899,25 @@ def _get_data_points(
                 tuple(number - 1 for number in comp) for comp in components_list
             ]
     else:
-        data_points = [adata.obsm[basis_key][:, offset : offset + n_dims]]
+        data_points = [np.array(adata.obsm[basis_key])[:, offset : offset + n_dims]]
         components_list = []
 
     if img_key is not None:
-        if f"tissue_{img_key}_scalef" in adata.uns['scalefactors'].keys():
+        spatial_data = adata.uns["spatial"][library_id]
+        if f"tissue_{img_key}_scalef" in spatial_data['scalefactors'].keys():
             scalef_key = f"tissue_{img_key}_scalef"
             data_points[0] = np.multiply(
-                data_points[0], adata.uns['scalefactors'][scalef_key]
+                data_points[0], spatial_data['scalefactors'][scalef_key],
             )
         else:
             raise KeyError(
-                f"Could not find entry in `adata.uns` for '{img_key}'.\n"
-                f"Available keys are: {list(adata.uns['images'].keys())}."
+                f"Could not find entry in `adata.uns[spatial][{library_id}]` for '{img_key}'.\n"
+                f"Available keys are: {list(spatial_data['images'].keys())}."
             )
+    elif img_key is None and basis == "spatial":
+        data_points[0][:, 1] = np.abs(
+            np.subtract(data_points[0][:, 1], np.max(data_points[0][:, 1]))
+        )
 
     return data_points, components_list
 
@@ -1063,18 +1090,21 @@ def _basis2name(basis):
     return component_name
 
 
-def _process_image(adata, data_points, img_key, crop_coord, scale_spot, bw=False):
+def _process_image(
+    adata, data_points, img_key, crop_coord, scale_spot, library_id, bw=False
+):
     offset = 100
     cmap_img = None
-    img = adata.uns['images'][img_key]
+    spatial_data = adata.uns['spatial'][library_id]
+    img = spatial_data['images'][img_key]
     scalef_key = f"tissue_{img_key}_scalef"
 
     # 0.5 needed for optimal matching with spot boundaries
     # checked with detected_tissue_image.png
     spot_size = (
         (
-            adata.uns['scalefactors'][scalef_key]
-            * adata.uns['scalefactors']['spot_diameter_fullres']
+            spatial_data['scalefactors'][scalef_key]
+            * spatial_data['scalefactors']['spot_diameter_fullres']
         )
         * 0.5
         * scale_spot

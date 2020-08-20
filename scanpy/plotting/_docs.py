@@ -30,6 +30,12 @@ edges_width
     Width of edges.
 edges_color
     Color of edges. See :func:`~networkx.drawing.nx_pylab.draw_networkx_edges`.
+neighbors_key
+    Where to look for neighbors connectivities.
+    If not specified, this looks .obsp['connectivities'] for connectivities
+    (default storage place for pp.neighbors).
+    If specified, this looks
+    .obsp[.uns[neighbors_key]['connectivities_key']] for connectivities.
 arrows
     Show arrows (requires to run :func:`scvelo.tl.velocity_embedding` before).
     Deprecated in favor of :func:`scvelo.pl.velocity_embedding` and friends.
@@ -183,6 +189,9 @@ num_categories
     Only used if groupby observation is not categorical. This value
     determines the number of groups into which the groupby observation
     should be subdivided.
+categories_order
+    Order in which to show the categories. Note: add_dendrogram or add_totals
+    can change the categories order.
 figsize
     Figure size when `multi_panel=True`.
     Otherwise the `rcParam['figure.figsize]` value is used.

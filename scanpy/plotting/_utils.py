@@ -17,6 +17,7 @@ from cycler import Cycler, cycler
 from .. import logging as logg
 from .._settings import settings
 from .._compat import Literal
+from .._utils import NeighborsView
 from . import palettes
 
 
@@ -482,14 +483,18 @@ def add_colors_for_categorical_sample_annotation(
         _set_default_colors_for_categorical_obs(adata, key)
 
 
-def plot_edges(axs, adata, basis, edges_width, edges_color):
+def plot_edges(axs, adata, basis, edges_width, edges_color, neighbors_key=None):
     import networkx as nx
 
     if not isinstance(axs, cabc.Sequence):
         axs = [axs]
-    if 'neighbors' not in adata.uns:
+
+    if neighbors_key is None:
+        neighbors_key = 'neighbors'
+    if neighbors_key not in adata.uns:
         raise ValueError('`edges=True` requires `pp.neighbors` to be run before.')
-    g = nx.Graph(adata.uns['neighbors']['connectivities'])
+    neighbors = NeighborsView(adata, neighbors_key)
+    g = nx.Graph(neighbors['connectivities'])
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         for ax in axs:
@@ -1075,7 +1080,7 @@ def make_projection_available(projection):
         )
 
 
-def circles(x, y, s, marker=None, c='b', vmin=None, vmax=None, **kwargs):
+def circles(x, y, s, ax, marker=None, c='b', vmin=None, vmax=None, **kwargs):
     """
     Taken from here: https://gist.github.com/syrte/592a062c562cd2a98a83
     Make a scatter plot of circles.
@@ -1121,15 +1126,13 @@ def circles(x, y, s, marker=None, c='b', vmin=None, vmax=None, **kwargs):
     zipped = np.broadcast(x, y, s)
     patches = [Circle((x_, y_), s_) for x_, y_, s_ in zipped]
     collection = PatchCollection(patches, **kwargs)
-    if c is not None and np.issubdtype(c.dtype, np.number):
+    if isinstance(c, np.ndarray) and np.issubdtype(c.dtype, np.number):
         collection.set_array(c)
         collection.set_clim(vmin, vmax)
     else:
         collection.set_facecolor(c)
 
-    ax = pl.gca()
     ax.add_collection(collection)
-    ax.autoscale_view()
 
     return collection
 
@@ -1154,7 +1157,40 @@ def make_grid_spec(
         return fig, gridspec.GridSpec(nrows, ncols, **kw)
     else:
         ax = ax_or_figsize
+        ax.axis('off')
         ax.set_frame_on(False)
         ax.set_xticks([])
         ax.set_yticks([])
         return ax.figure, ax.get_subplotspec().subgridspec(nrows, ncols, **kw)
+
+
+def fix_kwds(kwds_dict, **kwargs):
+    """
+    Given a dictionary of plot parameters (kwds_dict) and a dict of kwds,
+    merge the parameters into a single consolidated dictionary to avoid
+    argument duplication errors.
+
+    If kwds_dict an kwargs have the same key, only the value in kwds_dict is kept.
+
+    Parameters
+    ----------
+    kwds_dict kwds_dictionary
+    kwargs
+
+    Returns
+    -------
+    kwds_dict merged with kwargs
+
+    Examples
+    --------
+
+    >>> def _example(**kwds):
+    ...     return fix_kwds(kwds, key1="value1", key2="value2")
+    >>> example(key1="value10", key3="value3")
+        {'key1': 'value10, 'key2': 'value2', 'key3': 'value3'}
+
+    """
+
+    kwargs.update(kwds_dict)
+
+    return kwargs

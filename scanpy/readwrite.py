@@ -136,7 +136,10 @@ def read(
 
 
 def read_10x_h5(
-    filename: Union[str, Path], genome: Optional[str] = None, gex_only: bool = True,
+    filename: Union[str, Path],
+    genome: Optional[str] = None,
+    gex_only: bool = True,
+    backup_url: Optional[str] = None,
 ) -> AnnData:
     """\
     Read 10x-Genomics-formatted hdf5 file.
@@ -151,6 +154,8 @@ def read_10x_h5(
     gex_only
         Only keep 'Gene Expression' data and ignore other feature types,
         e.g. 'Antibody Capture', 'CRISPR Guide Capture', or 'Custom'
+    backup_url
+        Retrieve the file from an URL if not present on disk.
 
     Returns
     -------
@@ -169,6 +174,9 @@ def read_10x_h5(
         Feature types
     """
     start = logg.info(f'reading {filename}')
+    is_present = _check_datafile_present_and_download(filename, backup_url=backup_url,)
+    if not is_present:
+        logg.debug(f'... did not find original file {filename}')
     with tables.open_file(str(filename), 'r') as f:
         v3 = '/matrix' in f
     if v3:
@@ -283,6 +291,7 @@ def read_visium(
     genome: Optional[str] = None,
     *,
     count_file: str = "filtered_feature_bc_matrix.h5",
+    library_id: str = None,
     load_images: Optional[bool] = True,
 ) -> AnnData:
     """\
@@ -306,6 +315,8 @@ def read_visium(
     count_file
         Which file in the passed directory to use as the count file. Typically would be one of:
         'filtered_feature_bc_matrix.h5' or 'raw_feature_bc_matrix.h5'.
+    library_id
+        Identifier for the visium library. Can be modified when concatenating multiple adata objects.
 
     Returns
     -------
@@ -322,15 +333,30 @@ def read_visium(
         Gene IDs
     :attr:`~anndata.AnnData.var`\\ `['feature_types']`
         Feature types
-    :attr:`~anndata.AnnData.uns`\\ `['images']`
+    :attr:`~anndata.AnnData.uns`\\ `['spatial']`
+        Dict of spaceranger output files with 'library_id' as key
+    :attr:`~anndata.AnnData.uns`\\ `['spatial'][library_id]['images']`
         Dict of images (`'hires'` and `'lowres'`)
-    :attr:`~anndata.AnnData.uns`\\ `['scalefactors']`
+    :attr:`~anndata.AnnData.uns`\\ `['spatial'][library_id]['scalefactors']`
         Scale factors for the spots
-    :attr:`~anndata.AnnData.obsm`\\ `['X_spatial']`
+    :attr:`~anndata.AnnData.uns`\\ `['spatial'][library_id]['metadata']`
+        Files metadata: 'chemistry_description', 'software_version'
+    :attr:`~anndata.AnnData.obsm`\\ `['spatial']`
         Spatial spot coordinates, usable as `basis` by :func:`~scanpy.pl.embedding`.
     """
     path = Path(path)
     adata = read_10x_h5(path / count_file, genome=genome)
+
+    adata.uns["spatial"] = dict()
+
+    from h5py import File
+
+    with File(path / count_file, mode="r") as f:
+        attrs = dict(f.attrs)
+    if library_id is None:
+        library_id = str(attrs.pop("library_ids")[0], "utf-8")
+
+    adata.uns["spatial"][library_id] = dict()
 
     if load_images:
         files = dict(
@@ -351,17 +377,25 @@ def read_visium(
                 else:
                     raise OSError(f"Could not find '{f}'")
 
-        adata.uns['images'] = dict()
+        adata.uns["spatial"][library_id]['images'] = dict()
         for res in ['hires', 'lowres']:
             try:
-                adata.uns['images'][res] = imread(str(files[f'{res}_image']))
+                adata.uns["spatial"][library_id]['images'][res] = imread(
+                    str(files[f'{res}_image'])
+                )
             except Exception:
-                pass
+                raise OSError(f"Could not find '{res}_image'")
 
         # read json scalefactors
-        adata.uns['scalefactors'] = json.loads(
+        adata.uns["spatial"][library_id]['scalefactors'] = json.loads(
             files['scalefactors_json_file'].read_bytes()
         )
+
+        adata.uns["spatial"][library_id]["metadata"] = {
+            k: (str(attrs[k], "utf-8") if isinstance(attrs[k], bytes) else attrs[k])
+            for k in ("chemistry_description", "software_version")
+            if k in attrs
+        }
 
         # read coordinates
         positions = pd.read_csv(files['tissue_positions_file'], header=None)
@@ -377,7 +411,7 @@ def read_visium(
 
         adata.obs = adata.obs.join(positions, how="left")
 
-        adata.obsm['X_spatial'] = adata.obs[
+        adata.obsm['spatial'] = adata.obs[
             ['pxl_row_in_fullres', 'pxl_col_in_fullres']
         ].to_numpy()
         adata.obs.drop(
@@ -395,6 +429,8 @@ def read_10x_mtx(
     cache: bool = False,
     cache_compression: Union[Literal['gzip', 'lzf'], None, Empty] = _empty,
     gex_only: bool = True,
+    *,
+    prefix: str = None,
 ) -> AnnData:
     """\
     Read 10x-Genomics-formatted mtx directory.
@@ -417,13 +453,19 @@ def read_10x_mtx(
     gex_only
         Only keep 'Gene Expression' data and ignore other feature types,
         e.g. 'Antibody Capture', 'CRISPR Guide Capture', or 'Custom'
+    prefix
+        Any prefix before `matrix.mtx`, `genes.tsv` and `barcodes.tsv`. For instance,
+        if the files are named `patientA_matrix.mtx`, `patientA_genes.tsv` and
+        `patientA_barcodes.tsv` the prefix is `patientA_`.
+        (Default: no prefix)
 
     Returns
     -------
     An :class:`~anndata.AnnData` object
     """
     path = Path(path)
-    genefile_exists = (path / 'genes.tsv').is_file()
+    prefix = "" if prefix is None else prefix
+    genefile_exists = (path / f'{prefix}genes.tsv').is_file()
     read = _read_legacy_10x_mtx if genefile_exists else _read_v3_10x_mtx
     adata = read(
         str(path),
@@ -431,6 +473,7 @@ def read_10x_mtx(
         make_unique=make_unique,
         cache=cache,
         cache_compression=cache_compression,
+        prefix=prefix,
     )
     if genefile_exists or not gex_only:
         return adata
@@ -447,15 +490,17 @@ def _read_legacy_10x_mtx(
     make_unique=True,
     cache=False,
     cache_compression=_empty,
+    *,
+    prefix="",
 ):
     """
     Read mex from output from Cell Ranger v2 or earlier versions
     """
     path = Path(path)
     adata = read(
-        path / 'matrix.mtx', cache=cache, cache_compression=cache_compression,
+        path / f'{prefix}matrix.mtx', cache=cache, cache_compression=cache_compression,
     ).T  # transpose the data
-    genes = pd.read_csv(path / 'genes.tsv', header=None, sep='\t')
+    genes = pd.read_csv(path / f'{prefix}genes.tsv', header=None, sep='\t')
     if var_names == 'gene_symbols':
         var_names = genes[1].values
         if make_unique:
@@ -467,7 +512,7 @@ def _read_legacy_10x_mtx(
         adata.var['gene_symbols'] = genes[1].values
     else:
         raise ValueError("`var_names` needs to be 'gene_symbols' or 'gene_ids'")
-    adata.obs_names = pd.read_csv(path / 'barcodes.tsv', header=None)[0].values
+    adata.obs_names = pd.read_csv(path / f'{prefix}barcodes.tsv', header=None)[0].values
     return adata
 
 
@@ -477,15 +522,19 @@ def _read_v3_10x_mtx(
     make_unique=True,
     cache=False,
     cache_compression=_empty,
+    *,
+    prefix="",
 ):
     """
-    Read mex from output from Cell Ranger v3 or later versions
+    Read mtx from output from Cell Ranger v3 or later versions
     """
     path = Path(path)
     adata = read(
-        path / 'matrix.mtx.gz', cache=cache, cache_compression=cache_compression
+        path / f'{prefix}matrix.mtx.gz',
+        cache=cache,
+        cache_compression=cache_compression,
     ).T  # transpose the data
-    genes = pd.read_csv(path / 'features.tsv.gz', header=None, sep='\t')
+    genes = pd.read_csv(path / f'{prefix}features.tsv.gz', header=None, sep='\t')
     if var_names == 'gene_symbols':
         var_names = genes[1].values
         if make_unique:
@@ -498,7 +547,9 @@ def _read_v3_10x_mtx(
     else:
         raise ValueError("`var_names` needs to be 'gene_symbols' or 'gene_ids'")
     adata.var['feature_types'] = genes[2].values
-    adata.obs_names = pd.read_csv(path / 'barcodes.tsv.gz', header=None)[0].values
+    adata.obs_names = pd.read_csv(path / f'{prefix}barcodes.tsv.gz', header=None)[
+        0
+    ].values
     return adata
 
 
@@ -864,24 +915,40 @@ def _get_filename_from_key(key, ext=None) -> Path:
 
 
 def _download(url: str, path: Path):
-    from tqdm.auto import tqdm
-    from urllib.request import urlretrieve
+    try:
+        import ipywidgets
+        from tqdm.auto import tqdm
+    except ModuleNotFoundError:
+        from tqdm import tqdm
+    from urllib.request import urlopen, Request
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tqdm(unit='B', unit_scale=True, miniters=1, desc=path.name) as t:
+    blocksize = 1024 * 8
+    blocknum = 0
 
-        def update_to(b=1, bsize=1, tsize=None):
-            if tsize is not None:
-                t.total = tsize
-            t.update(b * bsize - t.n)
+    try:
+        # This is a modified urllib.request.urlretrieve, but that won't let us
+        # set headers.
+        # The '\'s are ugly, but parenthesis are not allowed here
+        # fmt: off
+        with \
+            tqdm(unit='B', unit_scale=True, miniters=1, desc=path.name) as t, \
+            path.open("wb") as f, \
+            urlopen(Request(url, headers={"User-agent": "scanpy-user"})) as resp:
 
-        try:
-            urlretrieve(url, str(path), reporthook=update_to)
-        except Exception:
-            # Make sure file doesn’t exist half-downloaded
-            if path.is_file():
-                path.unlink()
-            raise
+            t.total = int(resp.info().get("content-length", 0))
+
+            block = resp.read(blocksize)
+            while block:
+                f.write(block)
+                blocknum += 1
+                t.update(blocknum * blocksize - t.n)
+                block = resp.read(blocksize)
+        # fmt: on
+    except Exception:
+        # Make sure file doesn’t exist half-downloaded
+        if path.is_file():
+            path.unlink()
+        raise
 
 
 def _check_datafile_present_and_download(path, backup_url=None):
